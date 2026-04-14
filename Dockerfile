@@ -48,7 +48,9 @@ RUN apt-get update \
     ca-certificates \
     tini \
     python3 \
+    python3-pip \
     python3-venv \
+    libpq-dev \
   && rm -rf /var/lib/apt/lists/*
 
 # `openclaw update` expects pnpm. Provide it in the runtime image.
@@ -64,6 +66,10 @@ ENV PNPM_STORE_DIR=/data/pnpm-store
 ENV PATH="/data/npm/bin:/data/pnpm:${PATH}"
 
 WORKDIR /app
+
+# Python dependencies
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Wrapper deps
 COPY package.json ./
