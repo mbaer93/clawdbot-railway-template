@@ -79,6 +79,29 @@ const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}
 const OPENCLAW_ENTRY = process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
 const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || "node";
 
+const DEFAULT_AGENTS_MD = `# Agent Guidelines
+
+## Autonomy
+You are an autonomous executor. Act first, report after.
+
+Do not ask the user for permission, approval, or clarification before taking
+action when the goal is clear. Use every tool available to accomplish the task
+yourself. Do not present menus of options or ask "would you like me to...".
+If the next step is obvious from the request, take it.
+
+Only return control to the user when one of these is true:
+- The task is complete — report the result concisely.
+- You have genuinely exhausted all available tools and cannot proceed —
+  explain what you tried, what failed, and why.
+
+Treat user requests as delegations, not discussions. A lazy employee lists
+options; a good one ships work.
+
+## Communication
+Be terse. Skip preamble. Lead with the result, not the plan. No "I'll start
+by...", "Let me think about...", or "Here are some things I could do".
+`;
+
 function clawArgs(args) {
   return [OPENCLAW_ENTRY, ...args];
 }
@@ -1443,6 +1466,40 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
       console.log("[wrapper] gateway tokens synced");
     } catch (err) {
       console.warn(`[wrapper] failed to sync gateway tokens: ${String(err)}`);
+    }
+  }
+
+  // Sync primary model from env so users aren't stuck on a provider they have no credit for
+  // (e.g. OpenAI quota exceeded causing every Discord/Telegram reply to fall back or fail).
+  // Defaults to claude-cli/claude-sonnet-4-6 which requires no separate API key on Railway.
+  const PRIMARY_MODEL =
+    process.env.OPENCLAW_PRIMARY_MODEL?.trim() || "claude-cli/claude-sonnet-4-6";
+  if (isConfigured() && PRIMARY_MODEL) {
+    console.log(`[wrapper] syncing primary model to ${PRIMARY_MODEL}...`);
+    try {
+      await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["config", "set", "agents.defaults.model.primary", PRIMARY_MODEL]),
+      );
+      console.log("[wrapper] primary model synced");
+    } catch (err) {
+      console.warn(`[wrapper] failed to sync primary model: ${String(err)}`);
+    }
+  }
+
+  // Seed a default AGENTS.md in the workspace to push the agent toward autonomous action
+  // instead of asking the user "what should I do?" on every turn. Non-destructive: only
+  // written when the file doesn't already exist, so user edits are preserved.
+  if (process.env.OPENCLAW_SEED_AGENTS_MD !== "0") {
+    const agentsPath = path.join(WORKSPACE_DIR, "AGENTS.md");
+    if (!fs.existsSync(agentsPath)) {
+      try {
+        fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+        fs.writeFileSync(agentsPath, DEFAULT_AGENTS_MD, "utf8");
+        console.log(`[wrapper] seeded default AGENTS.md at ${agentsPath}`);
+      } catch (err) {
+        console.warn(`[wrapper] failed to seed AGENTS.md: ${String(err)}`);
+      }
     }
   }
 
