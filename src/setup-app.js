@@ -241,6 +241,88 @@
   if (configReloadEl) configReloadEl.onclick = loadConfigRaw;
   if (configSaveEl) configSaveEl.onclick = saveConfigRaw;
 
+  // Workspace file editor
+  var workspaceFileEl = document.getElementById('workspaceFile');
+  var workspaceReloadEl = document.getElementById('workspaceReload');
+  var workspaceTextEl = document.getElementById('workspaceText');
+  var workspaceMetaEl = document.getElementById('workspaceMeta');
+  var workspaceSaveEl = document.getElementById('workspaceSave');
+  var workspaceOutEl = document.getElementById('workspaceOut');
+  var workspaceRootEl = document.getElementById('workspaceRoot');
+
+  function formatSize(n) {
+    if (!n && n !== 0) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function loadWorkspaceList() {
+    if (!workspaceFileEl) return;
+    if (workspaceOutEl) workspaceOutEl.textContent = '';
+    return httpJson('/setup/api/workspace/files').then(function (j) {
+      if (workspaceRootEl && j.root) workspaceRootEl.textContent = j.root;
+      workspaceFileEl.innerHTML = '<option value="">(choose a file)</option>';
+      (j.files || []).forEach(function (f) {
+        var opt = document.createElement('option');
+        opt.value = f.path;
+        opt.textContent = f.path + '  (' + formatSize(f.size) + ')';
+        workspaceFileEl.appendChild(opt);
+      });
+    }).catch(function (e) {
+      if (workspaceOutEl) workspaceOutEl.textContent = 'Error listing files: ' + String(e);
+    });
+  }
+
+  function loadWorkspaceFile() {
+    if (!workspaceFileEl || !workspaceTextEl) return;
+    var rel = workspaceFileEl.value;
+    if (!rel) {
+      workspaceTextEl.value = '';
+      if (workspaceMetaEl) workspaceMetaEl.textContent = '';
+      return;
+    }
+    if (workspaceOutEl) workspaceOutEl.textContent = 'Loading ' + rel + '...';
+    return httpJson('/setup/api/workspace/file?path=' + encodeURIComponent(rel)).then(function (j) {
+      workspaceTextEl.value = j.content || '';
+      if (workspaceMetaEl) {
+        workspaceMetaEl.textContent = j.path + '  ·  ' + formatSize(j.size) + '  ·  modified ' + new Date(j.mtime).toLocaleString();
+      }
+      if (workspaceOutEl) workspaceOutEl.textContent = '';
+    }).catch(function (e) {
+      if (workspaceOutEl) workspaceOutEl.textContent = 'Error loading file: ' + String(e);
+    });
+  }
+
+  function saveWorkspaceFile() {
+    if (!workspaceFileEl || !workspaceTextEl) return;
+    var rel = workspaceFileEl.value;
+    if (!rel) {
+      alert('Choose a file first');
+      return;
+    }
+    if (!confirm('Save ' + rel + '? A timestamped .bak backup will be created.')) return;
+    if (workspaceOutEl) workspaceOutEl.textContent = 'Saving ' + rel + '...';
+    return httpJson('/setup/api/workspace/file?path=' + encodeURIComponent(rel), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: workspaceTextEl.value })
+    }).then(function (j) {
+      if (workspaceOutEl) workspaceOutEl.textContent = 'Saved ' + (j.path || rel) + ' (' + formatSize(j.size) + ')';
+      if (workspaceMetaEl) {
+        workspaceMetaEl.textContent = j.path + '  ·  ' + formatSize(j.size) + '  ·  modified ' + new Date(j.mtime).toLocaleString();
+      }
+    }).catch(function (e) {
+      if (workspaceOutEl) workspaceOutEl.textContent = 'Error saving: ' + String(e);
+    });
+  }
+
+  if (workspaceReloadEl) workspaceReloadEl.onclick = loadWorkspaceList;
+  if (workspaceFileEl) workspaceFileEl.onchange = loadWorkspaceFile;
+  if (workspaceSaveEl) workspaceSaveEl.onclick = saveWorkspaceFile;
+  // Initial load.
+  loadWorkspaceList();
+
   // Import backup
   function runImport() {
     if (!importRunEl || !importFileEl) return;

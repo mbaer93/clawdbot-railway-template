@@ -504,6 +504,23 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
   </div>
 
   <div class="card">
+    <h2>Workspace files</h2>
+    <p class="muted">View and edit scheduled scripts and docs under <code id="workspaceRoot">/data/workspace</code>. Use this to silence noisy Discord/Telegram posts from your Python jobs, or tune agent directives (<code>AGENTS.md</code>). Saves create a timestamped <code>.bak-*</code> backup.</p>
+    <div style="display:flex; gap:0.5rem; align-items:center">
+      <select id="workspaceFile" style="flex: 1">
+        <option value="">(choose a file)</option>
+      </select>
+      <button id="workspaceReload" style="background:#1f2937">Refresh</button>
+    </div>
+    <div class="muted" id="workspaceMeta" style="margin-top:0.5rem"></div>
+    <textarea id="workspaceText" style="width:100%; height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;" placeholder="Select a file to edit…"></textarea>
+    <div style="margin-top:0.5rem">
+      <button id="workspaceSave" style="background:#111">Save</button>
+    </div>
+    <pre id="workspaceOut" style="white-space:pre-wrap"></pre>
+  </div>
+
+  <div class="card">
     <h2>1) Model/auth provider</h2>
     <p class="muted">Matches the groups shown in the terminal onboarding.</p>
     <label>Provider group</label>
@@ -1181,6 +1198,125 @@ app.post("/setup/api/config/raw", requireSetupAuth, async (req, res) => {
     res.json({ ok: true, path: p });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// --- Workspace file editor ---
+// Audit and edit the scheduled Python scripts (and other text files) that OpenClaw
+// runs out of /data/workspace, so users can silence noisy behavior (e.g. Discord
+// success posts) without needing shell access to the Railway volume.
+
+const WORKSPACE_EDITABLE_EXTENSIONS = new Set([
+  ".py", ".md", ".txt", ".json", ".yaml", ".yml", ".sh", ".js", ".ts", ".toml", ".ini", ".cfg", ".env",
+]);
+const WORKSPACE_MAX_FILE_BYTES = 512 * 1024;
+const WORKSPACE_IGNORED_DIRS = new Set([".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache"]);
+
+function resolveWorkspacePath(relPath) {
+  if (typeof relPath !== "string" || !relPath.trim()) {
+    throw new Error("path required");
+  }
+  // Reject absolute paths and traversal. Normalize via path.resolve then verify containment.
+  const root = path.resolve(WORKSPACE_DIR);
+  const abs = path.resolve(root, relPath);
+  if (abs !== root && !abs.startsWith(root + path.sep)) {
+    throw new Error("path outside workspace");
+  }
+  return abs;
+}
+
+app.get("/setup/api/workspace/files", requireSetupAuth, (_req, res) => {
+  try {
+    const root = path.resolve(WORKSPACE_DIR);
+    const files = [];
+    const walk = (dir, rel) => {
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (entry.name.startsWith(".bak-")) continue;
+        const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (WORKSPACE_IGNORED_DIRS.has(entry.name)) continue;
+          walk(abs, relPath);
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (!WORKSPACE_EDITABLE_EXTENSIONS.has(ext)) continue;
+          let size = 0;
+          let mtime = 0;
+          try {
+            const stat = fs.statSync(abs);
+            size = stat.size;
+            mtime = stat.mtimeMs;
+          } catch {
+            // ignore
+          }
+          files.push({ path: relPath, size, mtime });
+        }
+      }
+    };
+    if (fs.existsSync(root)) walk(root, "");
+    files.sort((a, b) => a.path.localeCompare(b.path));
+    res.json({ ok: true, root, files });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+app.get("/setup/api/workspace/file", requireSetupAuth, (req, res) => {
+  try {
+    const rel = String(req.query.path || "");
+    const abs = resolveWorkspacePath(rel);
+    if (!fs.existsSync(abs)) {
+      return res.status(404).json({ ok: false, error: "file not found" });
+    }
+    const stat = fs.statSync(abs);
+    if (!stat.isFile()) {
+      return res.status(400).json({ ok: false, error: "not a file" });
+    }
+    if (stat.size > WORKSPACE_MAX_FILE_BYTES) {
+      return res
+        .status(413)
+        .json({ ok: false, error: `file too large (${stat.size} bytes; max ${WORKSPACE_MAX_FILE_BYTES})` });
+    }
+    const content = fs.readFileSync(abs, "utf8");
+    res.json({ ok: true, path: rel, size: stat.size, mtime: stat.mtimeMs, content });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: String(err) });
+  }
+});
+
+app.put("/setup/api/workspace/file", requireSetupAuth, (req, res) => {
+  try {
+    const rel = String(req.query.path || "");
+    const abs = resolveWorkspacePath(rel);
+    const ext = path.extname(abs).toLowerCase();
+    if (!WORKSPACE_EDITABLE_EXTENSIONS.has(ext)) {
+      return res.status(400).json({ ok: false, error: `extension ${ext} not editable` });
+    }
+    const content = String((req.body && req.body.content) || "");
+    if (Buffer.byteLength(content, "utf8") > WORKSPACE_MAX_FILE_BYTES) {
+      return res.status(413).json({ ok: false, error: "content too large" });
+    }
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    // Best-effort backup of any existing file so edits are recoverable.
+    if (fs.existsSync(abs)) {
+      const backupPath = `${abs}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      try {
+        fs.copyFileSync(abs, backupPath);
+      } catch {
+        // continue even if backup fails
+      }
+    }
+    fs.writeFileSync(abs, content, "utf8");
+    const stat = fs.statSync(abs);
+    res.json({ ok: true, path: rel, size: stat.size, mtime: stat.mtimeMs });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: String(err) });
   }
 });
 
