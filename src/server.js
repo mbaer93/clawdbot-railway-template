@@ -1471,9 +1471,9 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
 
   // Sync primary model from env so users aren't stuck on a provider they have no credit for
   // (e.g. OpenAI quota exceeded causing every Discord/Telegram reply to fall back or fail).
-  // Defaults to claude-cli/claude-sonnet-4-6 which requires no separate API key on Railway.
-  const PRIMARY_MODEL =
-    process.env.OPENCLAW_PRIMARY_MODEL?.trim() || "claude-cli/claude-sonnet-4-6";
+  // Opt-in only — leave config untouched unless OPENCLAW_PRIMARY_MODEL is set, so we don't
+  // accidentally break an existing fallback chain.
+  const PRIMARY_MODEL = process.env.OPENCLAW_PRIMARY_MODEL?.trim();
   if (isConfigured() && PRIMARY_MODEL) {
     console.log(`[wrapper] syncing primary model to ${PRIMARY_MODEL}...`);
     try {
