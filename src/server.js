@@ -79,7 +79,14 @@ const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}
 const OPENCLAW_ENTRY = process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
 const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || "node";
 
-const DEFAULT_AGENTS_MD = `# Agent Guidelines
+const AGENTS_MD_MARKER_PREFIX = "<!-- openclaw-railway-template AGENTS.md";
+const AGENTS_MD_TEMPLATE_VERSION = "v2";
+
+const DEFAULT_AGENTS_MD = `${AGENTS_MD_MARKER_PREFIX} (auto-generated, ${AGENTS_MD_TEMPLATE_VERSION}) -->
+<!-- Safe to edit: removing or changing the marker above will prevent the wrapper
+     from overwriting this file on future deploys. -->
+
+# Agent Guidelines
 
 ## Autonomy
 You are an autonomous executor. Act first, report after.
@@ -96,6 +103,32 @@ Only return control to the user when one of these is true:
 
 Treat user requests as delegations, not discussions. A lazy employee lists
 options; a good one ships work.
+
+## Scheduled Tasks and Background Checks
+When running scheduled or recurring checks (daily outreach, content creation,
+client feedback, activation promotions, health checks, test suites, etc.):
+
+- **Silence on success.** Do NOT post any message to the user when a check
+  passes. A successful run leaves zero Discord / Telegram / email messages.
+  No "all tests passed", no "everything is fine", no "no action required",
+  no celebratory emojis. Silence is the success report.
+
+- **Triage before reporting on failure.** If a check fails, do NOT immediately
+  notify the user. First, attempt to diagnose and fix the issue yourself using
+  every tool available: retry with backoff, inspect logs, repair state,
+  reconfigure, restart subprocesses, regenerate artifacts, etc.
+
+- **Report only after remediation.** Send exactly ONE message, and only after
+  you have either fixed the problem or exhausted your options:
+  - **If you fixed it:** one message with (a) what failed, (b) what you did
+    to fix it, (c) confirmation the check is now passing.
+  - **If you could not fix it:** one message with (a) what failed, (b) what
+    you tried, (c) why it didn't work, (d) concrete steps the user must take
+    to resolve it.
+
+- **Never** send status pings for healthy runs. Never send "heartbeat" messages
+  confirming the agent is alive. Never batch multiple successful results into a
+  digest. The user wants exception reports, not activity logs.
 
 ## Communication
 Be terse. Skip preamble. Lead with the result, not the plan. No "I'll start
@@ -1497,18 +1530,34 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   }
 
   // Seed a default AGENTS.md in the workspace to push the agent toward autonomous action
-  // instead of asking the user "what should I do?" on every turn. Non-destructive: only
-  // written when the file doesn't already exist, so user edits are preserved.
+  // and silence noisy success reports on scheduled checks. User edits are preserved: we
+  // only write when the file is missing, or when its header still has our auto-generated
+  // marker (meaning the user hasn't customized it yet). Removing the marker opts out of
+  // future template updates.
   if (process.env.OPENCLAW_SEED_AGENTS_MD !== "0") {
     const agentsPath = path.join(WORKSPACE_DIR, "AGENTS.md");
-    if (!fs.existsSync(agentsPath)) {
-      try {
-        fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
-        fs.writeFileSync(agentsPath, DEFAULT_AGENTS_MD, "utf8");
-        console.log(`[wrapper] seeded default AGENTS.md at ${agentsPath}`);
-      } catch (err) {
-        console.warn(`[wrapper] failed to seed AGENTS.md: ${String(err)}`);
+    try {
+      fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+      let shouldWrite = false;
+      if (!fs.existsSync(agentsPath)) {
+        shouldWrite = true;
+      } else {
+        const existing = fs.readFileSync(agentsPath, "utf8");
+        if (existing.startsWith(AGENTS_MD_MARKER_PREFIX)) {
+          // Template-managed file; safe to upgrade.
+          shouldWrite = !existing.includes(
+            `(auto-generated, ${AGENTS_MD_TEMPLATE_VERSION})`,
+          );
+        }
       }
+      if (shouldWrite) {
+        fs.writeFileSync(agentsPath, DEFAULT_AGENTS_MD, "utf8");
+        console.log(
+          `[wrapper] seeded AGENTS.md (${AGENTS_MD_TEMPLATE_VERSION}) at ${agentsPath}`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[wrapper] failed to seed AGENTS.md: ${String(err)}`);
     }
   }
 
