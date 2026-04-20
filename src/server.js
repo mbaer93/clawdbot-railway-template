@@ -220,6 +220,15 @@ async function startGateway() {
       ...process.env,
       OPENCLAW_STATE_DIR: STATE_DIR,
       OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
+      // Bump the V8 heap limit for the gateway. Node's default (~4 GB) has been
+      // crashing the gateway with OOM after hours of accumulated context, especially
+      // when scheduled workspace scripts run. Override with OPENCLAW_GATEWAY_NODE_OPTIONS.
+      NODE_OPTIONS: [
+        process.env.NODE_OPTIONS || "",
+        process.env.OPENCLAW_GATEWAY_NODE_OPTIONS || "--max-old-space-size=6144",
+      ]
+        .filter(Boolean)
+        .join(" "),
     },
   });
 
